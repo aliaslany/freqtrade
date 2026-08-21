@@ -1,0 +1,86 @@
+name: Strix Nightly Deep Scan
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+
+jobs:
+  nightly:
+    name: Deep Strix scan of open PRs
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Strix
+        run: curl -sSL https://strix.ai/install | bash
+
+      - name: Scan open PRs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STRIX_LLM: ${{ secrets.STRIX_LLM }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          prs=$(gh pr list --state open --base develop --json number --jq '.[].number')
+          if [ -z "$prs" ]; then
+            echo "No open PRs targeting develop."
+            exit 0
+          fi
+
+          for pr in $prs; do
+            echo "=== Strix deep scan for PR #$pr ==="
+            rm -rf strix_runs strix-results.sarif strix-comment.md
+
+            if ! git fetch origin "pull/$pr/head"; then
+              echo "Unable to fetch PR #$pr; continuing."
+              continue
+            fi
+            git checkout --detach FETCH_HEAD
+
+            scan_status=0
+            strix -n \
+              -t ./ \
+              --scan-mode deep \
+              --max-budget 30 || scan_status=$?
+
+            sarif=$(find strix_runs -name findings.sarif -type f -print -quit 2>/dev/null || true)
+
+            {
+              echo "## 🛡️ Strix nightly deep security scan"
+              echo
+              echo "Scanned PR #$pr at commit \`$(git rev-parse --short HEAD)\`."
+              echo
+              if [ "$scan_status" -ne 0 ]; then
+                echo "> ⚠️ Strix exited with status $scan_status. Review the workflow logs before treating this as a clean scan."
+                echo
+              fi
+
+              if [ -n "$sarif" ] && jq -e '.runs[].results[]?' "$sarif" >/dev/null 2>&1; then
+                count=$(jq '[.runs[].results[]] | length' "$sarif")
+                echo "### Findings: $count"
+                echo
+                jq -r '.runs[].results[] | "- **\(.level // "warning")** \(.message.text)"' "$sarif" | head -n 25
+                echo
+                echo "Full SARIF results are available in the workflow artifacts/code-scanning results."
+              else
+                echo "### Findings: 0"
+                echo
+                echo "No Strix findings were reported by the deep scan."
+              fi
+            } > strix-comment.md
+
+            gh pr comment "$pr" --body-file strix-comment.md || echo "Unable to comment on PR #$pr"
+          done
