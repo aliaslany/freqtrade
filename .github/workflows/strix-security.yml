@@ -35,9 +35,17 @@ jobs:
             --diff-base "origin/${{ github.base_ref }}" \
             --max-budget 10
 
+      - name: Prepare Strix SARIF
+        if: always()
+        run: |
+          sarif=$(find strix_runs -name findings.sarif -type f -print -quit 2>/dev/null || true)
+          if [ -n "$sarif" ]; then
+            cp "$sarif" strix-results.sarif
+          fi
+
       - name: Upload Strix SARIF
-        if: always() && hashFiles('strix_runs/**/findings.sarif') != ''
+        if: always() && hashFiles('strix-results.sarif') != ''
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: strix_runs
+          sarif_file: strix-results.sarif
           category: strix
