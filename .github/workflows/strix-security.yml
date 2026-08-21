@@ -1,0 +1,43 @@
+name: Strix Security Scan
+
+on:
+  pull_request:
+    branches: [develop]
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  strix:
+    name: AI penetration test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Strix
+        run: curl -sSL https://strix.ai/install | bash
+
+      - name: Run Strix
+        env:
+          STRIX_LLM: ${{ secrets.STRIX_LLM }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        run: |
+          strix -n \
+            -t ./ \
+            --scan-mode quick \
+            --scope-mode diff \
+            --diff-base "origin/${{ github.base_ref }}" \
+            --max-budget 10
+
+      - name: Upload Strix SARIF
+        if: always() && hashFiles('strix_runs/**/findings.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: strix_runs
+          category: strix
